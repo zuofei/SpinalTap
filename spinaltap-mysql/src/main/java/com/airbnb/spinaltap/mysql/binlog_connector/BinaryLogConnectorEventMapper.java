@@ -5,14 +5,7 @@
 package com.airbnb.spinaltap.mysql.binlog_connector;
 
 import com.airbnb.spinaltap.mysql.BinlogFilePos;
-import com.airbnb.spinaltap.mysql.event.BinlogEvent;
-import com.airbnb.spinaltap.mysql.event.DeleteEvent;
-import com.airbnb.spinaltap.mysql.event.QueryEvent;
-import com.airbnb.spinaltap.mysql.event.StartEvent;
-import com.airbnb.spinaltap.mysql.event.TableMapEvent;
-import com.airbnb.spinaltap.mysql.event.UpdateEvent;
-import com.airbnb.spinaltap.mysql.event.WriteEvent;
-import com.airbnb.spinaltap.mysql.event.XidEvent;
+import com.airbnb.spinaltap.mysql.event.*;
 import com.github.shyiko.mysql.binlog.event.DeleteRowsEventData;
 import com.github.shyiko.mysql.binlog.event.Event;
 import com.github.shyiko.mysql.binlog.event.EventHeaderV4;
@@ -94,8 +87,10 @@ public final class BinaryLogConnectorEventMapper {
                       .replaceAll("^\\s+", "")));
         case FORMAT_DESCRIPTION:
           return Optional.of(new StartEvent(serverId, timestamp, position));
-        default:
+        case UNKNOWN:
           return Optional.empty();
+        default:
+          return Optional.of(new IgnoredEvent(serverId, timestamp, position, eventType));
       }
     }
   }

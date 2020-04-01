@@ -9,14 +9,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import com.airbnb.spinaltap.mysql.BinlogFilePos;
-import com.airbnb.spinaltap.mysql.event.BinlogEvent;
-import com.airbnb.spinaltap.mysql.event.DeleteEvent;
-import com.airbnb.spinaltap.mysql.event.QueryEvent;
-import com.airbnb.spinaltap.mysql.event.StartEvent;
-import com.airbnb.spinaltap.mysql.event.TableMapEvent;
-import com.airbnb.spinaltap.mysql.event.UpdateEvent;
-import com.airbnb.spinaltap.mysql.event.WriteEvent;
-import com.airbnb.spinaltap.mysql.event.XidEvent;
+import com.airbnb.spinaltap.mysql.event.*;
 import com.airbnb.spinaltap.mysql.mutation.schema.ColumnDataType;
 import com.github.shyiko.mysql.binlog.event.DeleteRowsEventData;
 import com.github.shyiko.mysql.binlog.event.Event;
@@ -260,6 +253,23 @@ public class BinaryLogConnectorEventMapperTest {
 
   @Test
   public void testIgnoredEvents() {
+    eventHeader.setEventType(EventType.XA_PREPARE);
+    XAPrepareEventData eventData = new XAPrepareEventData();
+
+    Optional<BinlogEvent> binlogEvent =
+        BinaryLogConnectorEventMapper.INSTANCE.map(
+            new Event(eventHeader, eventData), BINLOG_FILE_POS);
+    assertTrue(binlogEvent.isPresent());
+    assertTrue(binlogEvent.get() instanceof IgnoredEvent);
+    IgnoredEvent ignoredEvent = (IgnoredEvent) (binlogEvent.get());
+    assertEquals(BINLOG_FILE_POS, ignoredEvent.getBinlogFilePos());
+    assertEquals(SERVER_ID, ignoredEvent.getServerId());
+    assertEquals(TIMESTAMP, ignoredEvent.getTimestamp());
+    assertEquals(EventType.XA_PREPARE, ignoredEvent.getEventType());
+  }
+
+  @Test
+  public void testUnknownEvents() {
     eventHeader.setEventType(EventType.UNKNOWN);
     XAPrepareEventData eventData = new XAPrepareEventData();
 
