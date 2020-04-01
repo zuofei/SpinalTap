@@ -11,17 +11,10 @@ import com.airbnb.spinaltap.mysql.event.BinlogEvent;
 import com.airbnb.spinaltap.mysql.event.filter.MysqlEventFilter;
 import com.airbnb.spinaltap.mysql.event.mapper.MysqlMutationMapper;
 import com.airbnb.spinaltap.mysql.exception.InvalidBinlogPositionException;
-import com.airbnb.spinaltap.mysql.mutation.MysqlMutation;
-import com.airbnb.spinaltap.mysql.mutation.MysqlMutationMetadata;
 import com.airbnb.spinaltap.mysql.schema.SchemaTracker;
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
@@ -32,14 +25,6 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 public abstract class MysqlSource extends AbstractDataStoreSource<BinlogEvent> {
-  /** Represents the latest binlog position in the mysql-binlog-connector client. */
-  public static final BinlogFilePos LATEST_BINLOG_POS = new BinlogFilePos(null, 0, 0);
-
-  /** Represents the earliest binlog position in the mysql-binlog-connector client. */
-  public static final BinlogFilePos EARLIEST_BINLOG_POS = new BinlogFilePos("", 4, 4);
-
-  /** The backoff rate when conducting rollback in the {@link StateHistory}. */
-  private static final int STATE_ROLLBACK_BACKOFF_RATE = 2;
 
   /** The {@link DataSource} representing the database host the source is streaming events from. */
   @NonNull @Getter private final DataSource dataSource;
@@ -50,51 +35,19 @@ public abstract class MysqlSource extends AbstractDataStoreSource<BinlogEvent> {
    */
   @NonNull private final TableCache tableCache;
 
-  /** The {@link StateRepository} where the {@link SourceState} is committed to. */
-  @NonNull private final StateRepository stateRepository;
-
-  /** The initial {@link BinlogFilePos} to start streaming from for the source. */
-  @NonNull private final BinlogFilePos initialBinlogFilePosition;
+  private final MysqlStateManager stateManager;
 
   @NonNull protected final MysqlSourceMetrics metrics;
-
-  /** The last checkpointed {@link SourceState} for the source. */
-  @NonNull
-  @VisibleForTesting
-  @Getter(AccessLevel.PACKAGE)
-  private AtomicReference<SourceState> lastSavedState;
-
-  /** The last MySQL {@link Transaction} seen so far from the streamed events. */
-  @NonNull
-  @VisibleForTesting
-  @Getter(AccessLevel.PACKAGE)
-  private AtomicReference<Transaction> lastTransaction;
-
-  /** The leader epoch of the current node processing the source stream. */
-  @NonNull private final AtomicLong currentLeaderEpoch;
-
-  /** The {@link StateHistory} of checkpointed {@link SourceState}s. */
-  @NonNull
-  @VisibleForTesting
-  @Getter(AccessLevel.PACKAGE)
-  private final StateHistory stateHistory;
-
-  /** The number of {@link SourceState} entries to remove from {@link StateHistory} on rollback. */
-  private final AtomicInteger stateRollbackCount = new AtomicInteger(1);
 
   public MysqlSource(
       @NonNull final String name,
       @NonNull final DataSource dataSource,
       @NonNull final Set<String> tableNames,
       @NonNull final TableCache tableCache,
-      @NonNull final StateRepository stateRepository,
-      @NonNull final StateHistory stateHistory,
-      @NonNull final BinlogFilePos initialBinlogFilePosition,
+      @NonNull final MysqlStateManager stateManager,
       @NonNull final SchemaTracker schemaTracker,
       @NonNull final MysqlSourceMetrics metrics,
-      @NonNull final AtomicLong currentLeaderEpoch,
-      @NonNull final AtomicReference<Transaction> lastTransaction,
-      @NonNull final AtomicReference<SourceState> lastSavedState) {
+      @NonNull final AtomicLong currentLeaderEpoch) {
     super(
         name,
         metrics,
@@ -104,19 +57,13 @@ public abstract class MysqlSource extends AbstractDataStoreSource<BinlogEvent> {
             schemaTracker,
             currentLeaderEpoch,
             new AtomicReference<>(),
-            lastTransaction,
+            stateManager.getLastTransaction(),
             metrics),
-        MysqlEventFilter.create(tableCache, tableNames, lastSavedState));
-
+        MysqlEventFilter.create(tableCache, tableNames, stateManager.getLastSavedState()));
     this.dataSource = dataSource;
     this.tableCache = tableCache;
-    this.stateRepository = stateRepository;
-    this.stateHistory = stateHistory;
+    this.stateManager = stateManager;
     this.metrics = metrics;
-    this.currentLeaderEpoch = currentLeaderEpoch;
-    this.lastTransaction = lastTransaction;
-    this.lastSavedState = lastSavedState;
-    this.initialBinlogFilePosition = initialBinlogFilePosition;
   }
 
   public abstract void setPosition(BinlogFilePos pos);
@@ -124,39 +71,8 @@ public abstract class MysqlSource extends AbstractDataStoreSource<BinlogEvent> {
   /** Initializes the source and prepares to start streaming. */
   protected void initialize() {
     tableCache.clear();
-
-    SourceState state = getSavedState();
-
-    lastSavedState.set(state);
-    lastTransaction.set(
-        new Transaction(state.getLastTimestamp(), state.getLastOffset(), state.getLastPosition()));
-
-    setPosition(state.getLastPosition());
-  }
-
-  /** Resets to the last valid {@link SourceState} recorded in the {@link StateHistory}. */
-  void resetToLastValidState() {
-    if (stateHistory.size() >= stateRollbackCount.get()) {
-      final SourceState newState = stateHistory.removeLast(stateRollbackCount.get());
-      saveState(newState);
-
-      metrics.resetSourcePosition();
-      log.info("Reset source {} position to {}.", name, newState.getLastPosition());
-
-      stateRollbackCount.accumulateAndGet(
-          STATE_ROLLBACK_BACKOFF_RATE, (value, rate) -> value * rate);
-
-    } else {
-      stateHistory.clear();
-      saveState(getEarliestState());
-
-      metrics.resetEarliestPosition();
-      log.info("Reset source {} position to earliest.", name);
-    }
-  }
-
-  private SourceState getEarliestState() {
-    return new SourceState(0L, 0L, currentLeaderEpoch.get(), EARLIEST_BINLOG_POS);
+    stateManager.initialize();
+    setPosition(stateManager.getLastPosition());
   }
 
   protected void onDeserializationError(final Exception ex) {
@@ -170,46 +86,13 @@ public abstract class MysqlSource extends AbstractDataStoreSource<BinlogEvent> {
     metrics.communicationFailure(ex);
 
     if (ex instanceof InvalidBinlogPositionException) {
-      resetToLastValidState();
+      stateManager.resetToLastValidState();
     }
     throw new RuntimeException(ex);
   }
 
   /** Checkpoints the {@link SourceState} for the source at the given {@link Mutation} position. */
   public void commitCheckpoint(final Mutation<?> mutation) {
-    final SourceState savedState = lastSavedState.get();
-    if (mutation == null || savedState == null) {
-      return;
-    }
-
-    Preconditions.checkState(mutation instanceof MysqlMutation);
-    final MysqlMutationMetadata metadata = ((MysqlMutation) mutation).getMetadata();
-
-    // Make sure we are saving at a higher watermark
-    if (savedState.getLastOffset() >= metadata.getId()) {
-      return;
-    }
-
-    final SourceState newState =
-        new SourceState(
-            metadata.getTimestamp(),
-            metadata.getId(),
-            currentLeaderEpoch.get(),
-            metadata.getLastTransaction().getPosition());
-
-    saveState(newState);
-
-    stateHistory.add(newState);
-    stateRollbackCount.set(1);
-  }
-
-  void saveState(@NonNull final SourceState state) {
-    stateRepository.save(state);
-    lastSavedState.set(state);
-  }
-
-  SourceState getSavedState() {
-    return Optional.ofNullable(stateRepository.read())
-        .orElse(new SourceState(0L, 0L, currentLeaderEpoch.get(), initialBinlogFilePosition));
+    stateManager.commitCheckpoint(mutation);
   }
 }

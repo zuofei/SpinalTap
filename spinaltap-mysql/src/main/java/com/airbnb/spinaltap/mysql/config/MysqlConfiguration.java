@@ -6,7 +6,7 @@ package com.airbnb.spinaltap.mysql.config;
 
 import com.airbnb.spinaltap.common.config.DestinationConfiguration;
 import com.airbnb.spinaltap.mysql.BinlogFilePos;
-import com.airbnb.spinaltap.mysql.binlog_connector.BinaryLogConnectorSource;
+import com.airbnb.spinaltap.mysql.MysqlStateManager;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableMap;
@@ -91,7 +91,7 @@ public class MysqlConfiguration extends AbstractMysqlConfiguration {
   private boolean schemaVersionEnabled = DEFAULT_SCHEMA_VERSION_ENABLED;
 
   @JsonProperty("initial_binlog_position")
-  private BinlogFilePos initialBinlogFilePosition = BinaryLogConnectorSource.LATEST_BINLOG_POS;
+  private BinlogFilePos initialBinlogFilePosition = MysqlStateManager.LATEST_BINLOG_POS;
 
   @JsonProperty("large_message_enabled")
   private boolean largeMessageEnabled = DEFAULT_LARGE_MESSAGE_ENABLED;
